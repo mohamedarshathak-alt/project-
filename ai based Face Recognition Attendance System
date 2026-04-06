@@ -14,7 +14,6 @@ MASTER_FILE = "master_attendance.xlsx"
 os.makedirs(FACE_DB, exist_ok=True)
 os.makedirs(DAILY_DIR, exist_ok=True)
 def initialize_files():
-    # Create master file if not exists
     if not os.path.exists(MASTER_FILE):
         df = pd.DataFrame(columns=['Name', 'Date', 'Time In', 'Time Out', 'Duration'])
         df.to_excel(MASTER_FILE, index=False, engine='openpyxl')
@@ -63,6 +62,19 @@ def mark_attendance(name):
         df_daily = pd.DataFrame(columns=['Name', 'Date', 'Time In', 'Time Out', 'Duration'])
         df_daily.to_excel(daily_path, index=False, engine='openpyxl')
     last_seen = name_last_seen.get(name)
+    if os.path.exists(MASTER_FILE):
+        df_master_check = pd.read_excel(MASTER_FILE, engine='openpyxl')
+        user_data = df_master_check[df_master_check['Name'] == name]
+        if not user_data.empty:
+            last_time_str = user_data.iloc[-1]['Time In']
+            last_date_str = user_data.iloc[-1]['Date']
+            try:
+                last_seen_file = datetime.strptime(f"{last_date_str} {last_time_str}", "%Y-%m-%d %H:%M:%S")
+                if (now - last_seen_file).total_seconds() < RECOGNITION_GAP:
+                    print(f"[WAIT] Cooldown (file): {name} recently marked.")
+                    return
+            except:
+                pass
     if last_seen and (now - last_seen).total_seconds() < RECOGNITION_GAP:
         print(f"[WAIT] Cooldown: Last seen {name} recently.")
         return
@@ -90,7 +102,6 @@ def mark_attendance(name):
         df_daily = pd.concat([df_daily, new_entry], ignore_index=True)
         print(f"[IN] {name} at {time_str}")
     df_daily.to_excel(daily_path, index=False, engine='openpyxl')
-    # Update master file
     if os.path.exists(MASTER_FILE):
         df_master = pd.read_excel(MASTER_FILE, engine='openpyxl')
     else:
