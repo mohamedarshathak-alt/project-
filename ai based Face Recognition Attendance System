@@ -1,1 +1,173 @@
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
+import cv2
+from deepface import DeepFace
+from datetime import datetime, timedelta
+import pandas as pd
+import os
+import tkinter as tk
+from tkinter import simpledialog
+import matplotlib.pyplot as plt
+FACE_DB = "faces"
+DAILY_DIR = "attendance"
+MASTER_FILE = "master_attendance.xlsx"
+os.makedirs(FACE_DB, exist_ok=True)
+os.makedirs(DAILY_DIR, exist_ok=True)
+def initialize_files():
+    # Create master file if not exists
+    if not os.path.exists(MASTER_FILE):
+        df = pd.DataFrame(columns=['Name', 'Date', 'Time In', 'Time Out', 'Duration'])
+        df.to_excel(MASTER_FILE, index=False, engine='openpyxl')
+        print("[INIT] Created master_attendance.xlsx")
+
+initialize_files()
+RECOGNITION_GAP = 10
+name_last_seen = {}
+def get_name_from_gui():
+    root = tk.Tk()
+    root.withdraw()
+    name = simpledialog.askstring("Register Face", "Enter your name:")
+    root.destroy()
+    return name.strip() if name else None
+def register_new_face():
+    name = get_name_from_gui()
+    if not name:
+        print("[X] Registration cancelled.")
+        return
+    cam = cv2.VideoCapture(0)
+    print("[INFO] Look at the camera. Press SPACE to capture, ESC to cancel.")
+    while True:
+        ret, frame = cam.read()
+        if not ret:
+            print("[X] Webcam error.")
+            break
+        cv2.imshow("Register Face", frame)
+        key = cv2.waitKey(1)
+        if key % 256 == 27:
+            print("[X] Cancelled.")
+            break
+        elif key % 256 == 32:
+            img_path = os.path.join(FACE_DB, f"{name}.jpg")
+            cv2.imwrite(img_path, frame)
+            print(f"[OK] Registered: {img_path}")
+            break
+    cam.release()
+    cv2.destroyAllWindows()
+def mark_attendance(name):
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    daily_path = os.path.join(DAILY_DIR, f"{date_str}.xlsx")
+    if os.path.exists(daily_path):
+        df_daily = pd.read_excel(daily_path, engine='openpyxl')
+    else:
+        df_daily = pd.DataFrame(columns=['Name', 'Date', 'Time In', 'Time Out', 'Duration'])
+        df_daily.to_excel(daily_path, index=False, engine='openpyxl')
+    last_seen = name_last_seen.get(name)
+    if last_seen and (now - last_seen).total_seconds() < RECOGNITION_GAP:
+        print(f"[WAIT] Cooldown: Last seen {name} recently.")
+        return
+    name_last_seen[name] = now
+    user_entries = df_daily[(df_daily['Name'] == name) & (df_daily['Date'] == date_str)]
+    if not user_entries.empty:
+        last_idx = user_entries.index[-1]
+        last_time_out = df_daily.at[last_idx, 'Time Out']
+        if pd.isna(last_time_out) or last_time_out == "":
+            df_daily.at[last_idx, 'Time Out'] = time_str
+            try:
+                t_in = datetime.strptime(df_daily.at[last_idx, 'Time In'], "%H:%M:%S")
+                t_out = datetime.strptime(time_str, "%H:%M:%S")
+                duration = t_out - t_in
+                df_daily.at[last_idx, 'Duration'] = str(duration)
+            except:
+                duration = "00:00:00"
+            print(f"[OUT] {name} at {time_str} | Duration: {duration}")
+        else:
+            new_entry = pd.DataFrame([[name, date_str, time_str, "", ""]], columns=df_daily.columns)
+            df_daily = pd.concat([df_daily, new_entry], ignore_index=True)
+            print(f"[IN] {name} at {time_str}")
+    else:
+        new_entry = pd.DataFrame([[name, date_str, time_str, "", ""]], columns=df_daily.columns)
+        df_daily = pd.concat([df_daily, new_entry], ignore_index=True)
+        print(f"[IN] {name} at {time_str}")
+    df_daily.to_excel(daily_path, index=False, engine='openpyxl')
+    # Update master file
+    if os.path.exists(MASTER_FILE):
+        df_master = pd.read_excel(MASTER_FILE, engine='openpyxl')
+    else:
+        df_master = pd.DataFrame(columns=['Name', 'Date', 'Time In', 'Time Out', 'Duration'])
+    last_entry = df_daily.iloc[[-1]]
+    df_master = pd.concat([df_master, last_entry], ignore_index=True)
+    df_master.to_excel(MASTER_FILE, index=False, engine='openpyxl')
+def show_attendance_chart():
+    try:
+        if not os.path.exists(MASTER_FILE):
+            print("[WARN] No master file found.")
+            return
+        df = pd.read_excel(MASTER_FILE, engine='openpyxl')
+        df = df[df['Duration'].notnull() & (df['Duration'] != "")]
+        if df.empty:
+            print("[INFO] No attendance data available.")
+            return
+        df['Duration'] = pd.to_timedelta(df['Duration'], errors='coerce')
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        summary = df.groupby(['Name', 'Date'])['Duration'].sum().reset_index()
+        plt.figure(figsize=(10, 6))
+        for name in summary['Name'].unique():
+            data = summary[summary['Name'] == name]
+            plt.plot(data['Date'], data['Duration'].dt.total_seconds() / 60, marker='o', label=name)
+        plt.xlabel("Date")
+        plt.ylabel("Duration (minutes)")
+        plt.title("Daily Attendance Duration")
+        plt.grid(True)
+        plt.legend()
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print("[ERROR] Chart:", e)
+def recognize_faces():
+    cam = cv2.VideoCapture(0)
+    print("[INFO] Press 'q' to quit | 'r' to register | 'c' for chart")
+    while True:
+        ret, frame = cam.read()
+        if not ret:
+            break
+        frame_path = "frame.jpg"
+        cv2.imwrite(frame_path, frame)
+        try:
+            results = DeepFace.find(
+                img_path=frame_path,
+                db_path=FACE_DB,
+                enforce_detection=False,
+                silent=True
+            )
+            if results and len(results[0]) > 0:
+                identity = results[0].iloc[0]['identity']
+                name = os.path.splitext(os.path.basename(identity))[0]
+                mark_attendance(name)
+                cv2.putText(frame, name, (30, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            else:
+                cv2.putText(frame, "Unknown", (30, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        except Exception as e:
+            print("[ERROR]:", e)
+        cv2.imshow("Face Attendance", frame)
+        key = cv2.waitKey(1)
+        if key & 0xFF == ord('q'):
+            break
+        elif key & 0xFF == ord('r'):
+            cam.release()
+            cv2.destroyAllWindows()
+            register_new_face()
+            cam = cv2.VideoCapture(0)
+        elif key & 0xFF == ord('c'):
+            cam.release()
+            cv2.destroyAllWindows()
+            show_attendance_chart()
+            cam = cv2.VideoCapture(0)
+    cam.release()
+    cv2.destroyAllWindows()
+recognize_faces()
