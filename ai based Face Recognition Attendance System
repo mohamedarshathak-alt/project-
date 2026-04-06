@@ -1,6 +1,5 @@
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
-
 import cv2
 from deepface import DeepFace
 from datetime import datetime, timedelta
@@ -20,7 +19,6 @@ def initialize_files():
         df = pd.DataFrame(columns=['Name', 'Date', 'Time In', 'Time Out', 'Duration'])
         df.to_excel(MASTER_FILE, index=False, engine='openpyxl')
         print("[INIT] Created master_attendance.xlsx")
-
 initialize_files()
 RECOGNITION_GAP = 10
 name_last_seen = {}
